@@ -32,7 +32,9 @@ esac
 
 log "usage:"
 log "  lego-controller-fix               fix the built-in LEGO title table"
-log "  lego-controller-fix --all-prefixes  fix every Proton prefix (and ~/.wine)"
+log "  lego-controller-fix --all-prefixes  fix every discovered prefix, all layers"
+log "  lego-controller-fix --prefix <path>  fix one explicitly named prefix"
 log "  lego-controller-fix --detect-only   show what would be targeted, change nothing"
+log "  lego-controller-fix --discover-only  list every prefix and its layer, change nothing"
 log "re-run it after installing or first-launching another LEGO game;"
 log "prefixes are only created the first time a game runs under Proton."

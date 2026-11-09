@@ -40,11 +40,12 @@ That hides only the duplicate legacy-js node from DirectInput. The
 event node, which is the interface games should be using, is untouched,
 so the controller keeps working normally everywhere else.
 
-Writes are done with a Proton / GE-Proton `wine` binary directly
-(`reg add`), flushed with `wineserver -w`, and then **verified by
-grepping the value back out of the prefix's `user.reg`**. A write that
-does not verify is reported `FAILED` and makes the tool exit nonzero.
-Nothing is claimed fixed on the tool's say-so alone.
+Writes are done with a `wine` binary directly (`reg add`), flushed
+with `wineserver -w`, and then **verified by grepping the value back
+out of the prefix's `user.reg`**. A write that does not verify is
+reported `FAILED` and makes the tool exit nonzero. Nothing is claimed
+fixed on the tool's say-so alone. Which wine binary does the writing
+depends on the layer that owns the prefix; see "Beyond Steam" below.
 
 ## Which games
 
@@ -61,9 +62,66 @@ marked with its evidence:
   3, LEGO Marvel's Avengers, The LEGO Movie 2 Videogame, LEGO The
   Incredibles.
 
-`--all-prefixes` ignores the table and treats **every** Proton prefix
-on the machine (plus `~/.wine`), for cases where the doubling shows up
-outside LEGO.
+`--all-prefixes` ignores the table and treats **every** Wine prefix
+on the machine, on every layer it can discover (next section), for
+cases where the doubling shows up outside LEGO.
+
+## Beyond Steam: compatibility layers
+
+A game that misbehaves on one Proton version may be moved to another
+Windows compatibility layer, and the fix has to follow it. The tool
+therefore discovers prefixes beyond Steam compatdata:
+
+- **Steam**: every `steamapps/compatdata/*/pfx` in every library.
+- **Bottles**: bottles under `~/.local/share/bottles/bottles/`,
+  including the Flatpak data dir
+  (`~/.var/app/com.usebottles.bottles/data/bottles/bottles/`). Bottles
+  template prefixes are not game prefixes and are never touched.
+- **Lutris**: prefixes named by game configs in
+  `~/.config/lutris/games/*.yml` (they can live anywhere), plus
+  anything prefix-shaped under `~/.local/share/lutris/`.
+- **Heroic**: prefixes under `~/Games/Heroic/`, including named
+  prefix folders and game folders with spaces in their names.
+- **Plain Wine**: `~/.wine`, plus the Wine project's own Flatpak
+  prefix (`~/.var/app/org.winehq.Wine/data/wine`).
+- **Anything prefix-shaped** in the bounded generic roots above and in
+  `~/.local/share/wineprefixes/`: a directory counts as a prefix when
+  it contains both `user.reg` and `drive_c`.
+
+Each discovered prefix gets a **layer label from the best evidence
+available**: Steam layout, then Lutris game configs, then the owning
+app's install location. When the evidence does not decide it, the
+label is `unknown`. Labels are reported, never guessed into facts.
+
+**Writes use the owning layer's own wine binary** when one is
+installed: Bottles runners (`~/.local/share/bottles/runners/`), Lutris
+runners (`~/.local/share/lutris/runners/wine/`), Heroic tools
+(`~/.config/heroic/tools/`, Wine and Proton builds). The fallback
+chain is GE-Proton, then any Proton, then system wine, and the
+wineserver used always sits next to the chosen wine. Registry write
+and verify-by-grep work exactly as in the Steam case.
+
+Two extra modes serve the layer world:
+
+- `--prefix <path>` applies the fix to one explicitly named prefix,
+  with the best wine binary for its layer. The path is validated
+  first: a directory without `user.reg` (or without `drive_c`) is
+  rejected with an error and exit 2. Use it for a prefix that lives
+  outside every scanned root.
+- `--discover-only` lists every prefix found on the machine, its
+  layer, whether it is running, whether the fix is already present,
+  and which wine binary a write would use. It changes nothing.
+
+Honest limits: discovery only looks in the roots listed above plus
+Lutris config paths; a prefix somewhere else is invisible until you
+point `--prefix` at it. A layer label can be wrong when a prefix was
+moved by hand after its app created it. Neither mode invents
+coverage it did not find.
+
+The `LEGO_FIX_DEVICES` environment variable (comma or semicolon
+separated device names) replaces controller auto-detection when set.
+It exists for testing, and for writing entries for a pad that is not
+connected right now.
 
 ## How device detection works
 
@@ -109,15 +167,22 @@ that entry.
   Steam library (not installed, or installed but never launched under
   Proton, so no prefix exists yet) prints nothing and is counted in the
   final summary line as "not present".
+- **Read-only modes change nothing.** `--detect-only` and
+  `--discover-only` never invoke a wine binary and never write; the
+  running check and the skip rule apply to prefixes on every layer,
+  not just Steam's.
 
 ## Usage
 
 ```sh
 ./install.sh                    # installs ~/.local/bin/lego-controller-fix
 
-lego-controller-fix             # fix the built-in LEGO table
-lego-controller-fix --all-prefixes
-lego-controller-fix --detect-only   # libraries, devices, targets; changes nothing
+lego-controller-fix             # fix the built-in LEGO table (Steam prefixes)
+lego-controller-fix --all-prefixes   # fix every discovered prefix, all layers
+lego-controller-fix --prefix <path>  # fix one explicitly named prefix
+lego-controller-fix --detect-only    # libraries, devices, targets; changes nothing
+lego-controller-fix --discover-only  # every prefix, its layer and fix state;
+                                     # changes nothing
 ```
 
 Steam libraries are discovered from the standard Steam roots plus every
