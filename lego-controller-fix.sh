@@ -108,7 +108,7 @@ REG_KEY='HKCU\Software\Wine\DirectInput\Joysticks'
 
 # Date-based version (YYYY.MM.DD.N). Printed by --version so bug
 # reports can name exactly which build they ran.
-VERSION="2026.11.09.1"
+VERSION="2026.11.09.2"
 
 # ---------------------------------------------------------------------------
 # Built-in title table (default mode)
@@ -289,7 +289,14 @@ fi
 # command line, and counting ourselves would make every --prefix run
 # look like its target was already running.
 SNAP_CMD="$(mktemp)"; SNAP_ENV="$(mktemp)"
-trap 'rm -f "$SNAP_CMD" "$SNAP_ENV"' EXIT
+# Failure marker for the prefix workers. They run inside $(...)
+# subshells (their stdout is captured for the summary tally), so a
+# HAD_FAILURE=1 set there never reaches this shell. Workers append to
+# this file instead and the exit checks test it. mktemp gives every
+# run a fresh, empty, unpredictable path, and the EXIT trap removes
+# it, so no state leaks between runs or between prefixes.
+FAIL_MARK="$(mktemp)"
+trap 'rm -f "$SNAP_CMD" "$SNAP_ENV" "$FAIL_MARK"' EXIT
 SELF_CMD="$(tr '\0' ' ' < /proc/$$/cmdline 2>/dev/null)"
 for d in /proc/[0-9]*; do
     [ -r "$d/cmdline" ] || continue
@@ -532,6 +539,14 @@ present_devices() { # $1 = pfx path
 
 HAD_FAILURE=0
 
+# Record a failed write or delete. Called from the prefix workers,
+# which run in subshells; appending to FAIL_MARK is what carries the
+# failure back to the parent shell (see the FAIL_MARK definition).
+mark_failure() {
+    HAD_FAILURE=1
+    printf 'x\n' >> "$FAIL_MARK"
+}
+
 # $1 = label, $2 = pfx path, $3 = appid (may be ""), $4 = layer
 process_prefix() {
     local label="$1" pfx="$2" appid="${3:-}" layer="${4:-steam}"
@@ -554,7 +569,7 @@ process_prefix() {
     fi
     if [ -z "$pw" ]; then
         log "$label: FAILED (no wine binary found for layer '$layer': no layer runner, GE-Proton, Proton, or system wine)"
-        HAD_FAILURE=1
+        mark_failure
         return 0
     fi
     local dev err rc
@@ -565,7 +580,7 @@ process_prefix() {
         rc=$?
         if [ $rc -ne 0 ]; then
             log "$label: FAILED (reg add rc=$rc for '$dev (js)': $(printf '%s' "$err" | tail -n 1))"
-            HAD_FAILURE=1
+            mark_failure
             return 0
         fi
     done <<< "$missing"
@@ -582,7 +597,7 @@ process_prefix() {
         sleep 1
     done
     log "$label: FAILED (value not present in user.reg after write)"
-    HAD_FAILURE=1
+    mark_failure
 }
 
 # Removal worker: the exact inverse of process_prefix. Deletes only
@@ -612,7 +627,7 @@ remove_prefix() {
     fi
     if [ -z "$pw" ]; then
         log "$label: FAILED (no wine binary found for layer '$layer': no layer runner, GE-Proton, Proton, or system wine)"
-        HAD_FAILURE=1
+        mark_failure
         return 0
     fi
     local dev err rc
@@ -623,7 +638,7 @@ remove_prefix() {
         rc=$?
         if [ $rc -ne 0 ]; then
             log "$label: FAILED (reg delete rc=$rc for '$dev (js)': $(printf '%s' "$err" | tail -n 1))"
-            HAD_FAILURE=1
+            mark_failure
             return 0
         fi
     done <<< "$present"
@@ -640,7 +655,7 @@ remove_prefix() {
         sleep 1
     done
     log "$label: FAILED (value still present in user.reg after delete)"
-    HAD_FAILURE=1
+    mark_failure
 }
 
 # ------------------------------------------------------------- detection ----
@@ -783,7 +798,7 @@ if [ "$MODE" = "prefix" ]; then
         out="$(process_prefix "PREFIX ($layer)" "$pfx" "" "$layer")"
     fi
     log "$out"
-    [ "$HAD_FAILURE" -eq 0 ] || exit 1
+    [ "$HAD_FAILURE" -eq 0 ] && [ ! -s "$FAIL_MARK" ] || exit 1
     exit 0
 fi
 
@@ -865,5 +880,5 @@ else
     fi
 fi
 
-[ "$HAD_FAILURE" -eq 0 ] || exit 1
+[ "$HAD_FAILURE" -eq 0 ] && [ ! -s "$FAIL_MARK" ] || exit 1
 exit 0

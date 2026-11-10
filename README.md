@@ -376,4 +376,6 @@ concerns you.
 - Exit status is 0 for every "nothing to do" outcome: no Steam found,
   no gamepad connected, no target prefixes, everything already fixed.
   It is nonzero only when a write or a delete was attempted and
-  failed verification.
+  failed verification. (Before 2026.11.09.2 a prefix could print
+  FAILED and the tool still exited 0; the contract above is the one
+  that build enforces.)
