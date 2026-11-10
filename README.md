@@ -5,7 +5,40 @@ on a machine. If a game is not installed, or has never been run under
 Proton, it is skipped silently and counted at the end, so the same
 package works on any machine: it only ever touches what is actually
 there. No per-game builds, no per-machine edits, nothing hardcoded to
-one person's controller.
+one person's controller. What it fixes is the double controller bug:
+one gamepad registering as two controllers in TT-engine LEGO games
+under Wine and Proton. What it writes can also be removed again just
+as cleanly; see "Remove the fix and uninstall" below.
+
+## Install
+
+You need a Linux machine with Steam (or Bottles, Lutris, or Heroic),
+your controller, and a terminal. The tool installs nothing of its
+own; it writes through the Proton or Wine binary your setup already
+has.
+
+1. Get the package: clone it with
+   `git clone https://github.com/ZacharyEpic/lego-controller-fix-easy.git`
+   or download the repository from GitHub and unpack it.
+2. Open a terminal in the package folder and run the installer:
+   `./install.sh`
+   It copies the tool to `~/.local/bin/lego-controller-fix`. If the
+   installer notes that `~/.local/bin` is not in your PATH, add it to
+   your shell configuration, or call the tool by its full path
+   (`~/.local/bin/lego-controller-fix`) everywhere below.
+3. Optional, recommended on a first run: look before anything is
+   written. `lego-controller-fix --detect-only` shows the Steam
+   libraries, the detected controller, and the target titles;
+   `lego-controller-fix --discover-only` lists every Wine prefix on
+   the machine and its fix state. Both change nothing.
+4. Connect the controller the way you play, then run the tool:
+   `lego-controller-fix` covers the built-in LEGO title table on
+   Steam. For every prefix on every layer, run
+   `lego-controller-fix --all-prefixes` instead.
+
+A game only gets a Wine prefix the first time it runs under Proton,
+so a title that is installed but was never launched is skipped on
+purpose. Launch it once, quit, and re-run the tool.
 
 ## The bug this fixes
 
@@ -46,6 +79,11 @@ out of the prefix's `user.reg`**. A write that does not verify is
 reported `FAILED` and makes the tool exit nonzero. Nothing is claimed
 fixed on the tool's say-so alone. Which wine binary does the writing
 depends on the layer that owns the prefix; see "Beyond Steam" below.
+
+Everything written this way can be taken back out the same way:
+`--remove` deletes exactly these values again, through the same wine
+binary, verified gone from `user.reg`. See "Remove the fix and
+uninstall".
 
 ## Which games
 
@@ -112,6 +150,11 @@ Two extra modes serve the layer world:
   layer, whether it is running, whether the fix is already present,
   and which wine binary a write would use. It changes nothing.
 
+`--remove` is not a mode of its own. It flips any applying mode
+(the default title table, `--all-prefixes`, `--prefix`) from writing
+the values to deleting them, and it turns `--detect-only` and
+`--discover-only` into removal previews.
+
 Honest limits: discovery only looks in the roots listed above plus
 Lutris config paths; a prefix somewhere else is invisible until you
 point `--prefix` at it. A layer label can be wrong when a prefix was
@@ -171,11 +214,19 @@ that entry.
   `--discover-only` never invoke a wine binary and never write; the
   running check and the skip rule apply to prefixes on every layer,
   not just Steam's.
+- **Removal is the exact inverse.** `--remove` deletes only the
+  `"<name> (js)" = "disabled"` values for the devices detected at
+  removal time, through the same per-layer wine binary, and verifies
+  each value is gone from `user.reg` before reporting `REMOVED`.
+  Running games are skipped for removal exactly as for applying, and
+  values belonging to devices that are not connected at removal time
+  are left in place, the mirror of applying never writing them.
 
 ## Usage
 
 ```sh
 ./install.sh                    # installs ~/.local/bin/lego-controller-fix
+./uninstall.sh                  # removes ~/.local/bin/lego-controller-fix
 
 lego-controller-fix             # fix the built-in LEGO table (Steam prefixes)
 lego-controller-fix --all-prefixes   # fix every discovered prefix, all layers
@@ -183,6 +234,10 @@ lego-controller-fix --prefix <path>  # fix one explicitly named prefix
 lego-controller-fix --detect-only    # libraries, devices, targets; changes nothing
 lego-controller-fix --discover-only  # every prefix, its layer and fix state;
                                      # changes nothing
+lego-controller-fix --remove             # undo the fix, built-in LEGO table
+lego-controller-fix --remove --all-prefixes  # undo the fix, every prefix
+lego-controller-fix --remove --prefix <path> # undo the fix, one named prefix
+lego-controller-fix --version            # print the tool version
 ```
 
 Steam libraries are discovered from the standard Steam roots plus every
@@ -193,6 +248,50 @@ picked up automatically.
 has been launched once. When you install or first-launch another LEGO
 title, run `lego-controller-fix` once more; it will fix just the new
 one and report the rest `ALREADY`.
+
+## Update
+
+There is no separate updater; updating is installing again:
+
+1. Download or pull the new version of this package.
+2. Run `./install.sh` from the new copy. It overwrites
+   `~/.local/bin/lego-controller-fix` with the newer tool; there is
+   nothing to uninstall first.
+3. Re-run `lego-controller-fix` (or `--all-prefixes` for every
+   layer). The tool is idempotent, so the re-run only covers whatever
+   the new version adds, such as a new title in the table; prefixes
+   that were already fixed report `ALREADY` and are untouched.
+
+Registry entries written by an older version stay valid, so an update
+never needs the fix removed first. `lego-controller-fix --version`
+prints the version you currently have installed, in `YYYY.MM.DD.N`
+form; that is the string bug reports should name.
+
+## Remove the fix and uninstall
+
+These are two separate things, and the order matters:
+
+1. **Remove the fix from your game prefixes**, while the tool is
+   still installed:
+   - `lego-controller-fix --remove` covers the built-in LEGO title
+     table prefixes.
+   - `lego-controller-fix --remove --all-prefixes` covers every
+     discovered prefix on every layer.
+   - `lego-controller-fix --remove --prefix <path>` covers one named
+     prefix.
+
+   Removal deletes exactly the `"<Device Name> (js)" = "disabled"`
+   values the tool wrote, for the devices detected at removal time,
+   and verifies each one is gone from `user.reg`. Connect the
+   controller first, the same as when applying. A running game's
+   prefix is skipped. To preview what would be removed without
+   changing anything, combine it with a read-only mode, for example
+   `lego-controller-fix --remove --discover-only`.
+2. **Uninstall the tool**: run `./uninstall.sh` from the package
+   folder. It deletes `~/.local/bin/lego-controller-fix` and nothing
+   else. It does not undo registry changes, which is why step 1 comes
+   first. If you uninstalled first by mistake, re-run `./install.sh`,
+   do step 1, then uninstall again.
 
 ## Maintaining the title list
 
@@ -241,6 +340,33 @@ neither causes nor cures them. They are listed here so nobody mistakes
 "the fix is applied" for "every controller problem in these games is
 solved".
 
+## Feedback and bug reports
+
+Report problems, and suggest titles or controllers that should be
+covered, in GitHub Issues on this repository:
+https://github.com/ZacharyEpic/lego-controller-fix-easy/issues
+
+A useful report includes:
+
+- your distro (for example Arch, Ubuntu, Fedora) and how Steam or
+  the launcher is installed (native package or Flatpak);
+- the Proton or compatibility layer version the game runs on (for
+  example Proton 9.0 or GE-Proton 10), or the Bottles, Lutris, or
+  Heroic runner when the game is not on Steam;
+- the game title, plus its Steam appid if you know it;
+- the controller model and how it connects (USB, Bluetooth, or a
+  wireless dongle);
+- the output of `lego-controller-fix --version`;
+- the output of `lego-controller-fix --detect-only`, pasted in full
+  (add `--discover-only` output when the game is not a Steam title);
+- what the tool reported for your game (`FIXED`, `ALREADY`,
+  `SKIPPED-RUNNING`, `FAILED`, `REMOVED`, or nothing at all) and what
+  the game still does wrong afterwards.
+
+The `--detect-only` output includes your Steam library paths and your
+controller's device name. Read it over before posting if that
+concerns you.
+
 ## Notes
 
 - This package supersedes the one-machine ad-hoc script
@@ -249,5 +375,5 @@ solved".
   version.
 - Exit status is 0 for every "nothing to do" outcome: no Steam found,
   no gamepad connected, no target prefixes, everything already fixed.
-  It is nonzero only when a write was attempted and failed
-  verification.
+  It is nonzero only when a write or a delete was attempted and
+  failed verification.

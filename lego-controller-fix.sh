@@ -20,6 +20,13 @@
 # which hides only the duplicate legacy-js node. The event node, the one
 # games should use, stays fully working.
 #
+# Removal (--remove) is the exact inverse: it deletes only those same
+# "(js)" = "disabled" values, for the same detected devices, in the
+# same prefixes, through the same per-layer wine binary, and verifies
+# each value is gone from user.reg afterwards. Nothing else in the key
+# is touched, and values for devices that are not detected at removal
+# time are left alone, exactly as applying never wrote them.
+#
 # Layers: a game that misbehaves on one Proton version may be moved to
 # another Windows compatibility layer, and the fix has to follow it.
 # Beyond Steam compatdata, --all-prefixes also discovers prefixes owned
@@ -67,26 +74,41 @@
 #     deliberately not used; it hands off to winetricks and fails on
 #     some machines), are flushed with wineserver -w, and are verified
 #     by grepping the value back out of the prefix's user.reg.
-#   - --detect-only and --discover-only change nothing at all.
+#   - --detect-only and --discover-only change nothing at all. With
+#     --remove they report what would be removed instead of what
+#     would be written.
+#   - Removal is held to the same rules as applying: a running game's
+#     prefix is SKIPPED-RUNNING and never written, and a delete that
+#     does not verify (the value still in user.reg afterwards) is
+#     reported FAILED.
 #
 # Usage:
 #   lego-controller-fix.sh                    fix the built-in LEGO table (Steam)
 #   lego-controller-fix.sh --all-prefixes     fix every discovered prefix, all layers
 #   lego-controller-fix.sh --prefix <path>    fix one explicitly named prefix
+#   lego-controller-fix.sh --remove           remove the fix instead of applying it;
+#                                             combines with the default table,
+#                                             --all-prefixes, and --prefix
 #   lego-controller-fix.sh --detect-only      show LEGO/Steam targets, change nothing
 #   lego-controller-fix.sh --discover-only    list every prefix, its layer and fix
 #                                             state, change nothing
+#   lego-controller-fix.sh --version          print the version and exit
 #   lego-controller-fix.sh --help
 #
 # Exit status: 0 normally, including "nothing to do" cases (no layers
 # found, no gamepad, no target prefixes). 2 for usage errors, including
 # a --prefix path that is not a Wine prefix. Nonzero (1) when a write
-# was attempted but could not be verified in user.reg afterwards.
+# or a delete was attempted but could not be verified in user.reg
+# afterwards.
 
 set -u
 export WINEDEBUG=-all
 
 REG_KEY='HKCU\Software\Wine\DirectInput\Joysticks'
+
+# Date-based version (YYYY.MM.DD.N). Printed by --version so bug
+# reports can name exactly which build they ran.
+VERSION="2026.11.09.1"
 
 # ---------------------------------------------------------------------------
 # Built-in title table (default mode)
@@ -122,12 +144,15 @@ LEGO_TITLES=(
 
 MODE="lego"
 PREFIX_ARG=""
+REMOVE=0
 n_mode_flags=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --all-prefixes) MODE="all"; n_mode_flags=$((n_mode_flags+1)) ;;
         --detect-only) MODE="detect"; n_mode_flags=$((n_mode_flags+1)) ;;
         --discover-only) MODE="discover"; n_mode_flags=$((n_mode_flags+1)) ;;
+        --remove) REMOVE=1 ;;
+        --version) printf '%s\n' "$VERSION"; exit 0 ;;
         --prefix)
             MODE="prefix"; n_mode_flags=$((n_mode_flags+1))
             shift
@@ -495,6 +520,16 @@ missing_devices() { # $1 = pfx path
     done
 }
 
+# Devices whose disable value IS present in a prefix: echoes one name
+# per line. This is the removal candidate list, the exact inverse of
+# missing_devices.
+present_devices() { # $1 = pfx path
+    local dev
+    for dev in "${DEVICES[@]}"; do
+        value_present "$1/user.reg" "$dev" && printf '%s\n' "$dev"
+    done
+}
+
 HAD_FAILURE=0
 
 # $1 = label, $2 = pfx path, $3 = appid (may be ""), $4 = layer
@@ -550,12 +585,74 @@ process_prefix() {
     HAD_FAILURE=1
 }
 
+# Removal worker: the exact inverse of process_prefix. Deletes only
+# the "(js)" = "disabled" values for the detected devices, through
+# the same per-layer wine binary the apply path would use, flushed
+# with wineserver -w and verified by the value being gone from
+# user.reg afterwards. Nothing else is touched.
+# $1 = label, $2 = pfx path, $3 = appid (may be ""), $4 = layer
+remove_prefix() {
+    local label="$1" pfx="$2" appid="${3:-}" layer="${4:-steam}"
+    wine_for_layer "$layer"
+    local pw="$RW_WINE" ps="$RW_SERVER"
+
+    if [ "${#DEVICES[@]}" -eq 0 ]; then
+        log "$label: NO-DEVICE (no gamepad-class device detected; nothing removed)"
+        return 0
+    fi
+    local present
+    present="$(present_devices "$pfx")"
+    if [ -z "$present" ]; then
+        log "$label: NOT-PRESENT"
+        return 0
+    fi
+    if prefix_active "$pfx" "$appid"; then
+        log "$label: SKIPPED-RUNNING"
+        return 0
+    fi
+    if [ -z "$pw" ]; then
+        log "$label: FAILED (no wine binary found for layer '$layer': no layer runner, GE-Proton, Proton, or system wine)"
+        HAD_FAILURE=1
+        return 0
+    fi
+    local dev err rc
+    while IFS= read -r dev; do
+        [ -n "$dev" ] || continue
+        err=$(WINEPREFIX="$pfx" timeout 120 "$pw" reg delete "$REG_KEY" \
+              /v "$dev (js)" /f 2>&1)
+        rc=$?
+        if [ $rc -ne 0 ]; then
+            log "$label: FAILED (reg delete rc=$rc for '$dev (js)': $(printf '%s' "$err" | tail -n 1))"
+            HAD_FAILURE=1
+            return 0
+        fi
+    done <<< "$present"
+    # flush the registry to disk, then verify from user.reg
+    if [ -n "$ps" ]; then
+        WINEPREFIX="$pfx" timeout 60 "$ps" -w >/dev/null 2>&1
+    fi
+    local i
+    for i in $(seq 1 10); do
+        if [ -z "$(present_devices "$pfx")" ]; then
+            log "$label: REMOVED"
+            return 0
+        fi
+        sleep 1
+    done
+    log "$label: FAILED (value still present in user.reg after delete)"
+    HAD_FAILURE=1
+}
+
 # ------------------------------------------------------------- detection ----
 ROOTS="$(steam_roots)"
 LIBS="$(steam_libraries)"
 
 if [ "$MODE" = "detect" ]; then
-    log "== lego-controller-fix --detect-only (nothing will be changed) =="
+    if [ "$REMOVE" -eq 1 ]; then
+        log "== lego-controller-fix --detect-only --remove (removal preview; nothing will be changed) =="
+    else
+        log "== lego-controller-fix --detect-only (nothing will be changed) =="
+    fi
     if [ -z "$ROOTS" ]; then
         log "Steam: not found (no Steam root with a steamapps folder)"
     else
@@ -569,7 +666,11 @@ if [ "$MODE" = "detect" ]; then
     else
         log "Gamepad-class devices (names as Wine sees them):"
         for d in "${DEVICES[@]}"; do log "  $d"; done
-        log "Disable entries that would be written per prefix:"
+        if [ "$REMOVE" -eq 1 ]; then
+            log "Disable entries that would be removed per prefix:"
+        else
+            log "Disable entries that would be written per prefix:"
+        fi
         for d in "${DEVICES[@]}"; do log "  \"$d (js)\" = \"disabled\""; done
     fi
     wb="$(find_wine || true)"
@@ -596,7 +697,11 @@ fi
 
 # ----------------------------------------------------------- discover-only --
 if [ "$MODE" = "discover" ]; then
-    log "== lego-controller-fix --discover-only (nothing will be changed) =="
+    if [ "$REMOVE" -eq 1 ]; then
+        log "== lego-controller-fix --discover-only --remove (removal preview; nothing will be changed) =="
+    else
+        log "== lego-controller-fix --discover-only (nothing will be changed) =="
+    fi
     if [ "${#DEVICES[@]}" -eq 0 ]; then
         log "Gamepad-class devices: none detected (fix state per prefix is reported against stored entries only)"
     else
@@ -614,7 +719,22 @@ if [ "$MODE" = "discover" ]; then
         n_disc=$((n_disc+1))
         wine_for_layer "$layer"
         if prefix_active "$pfx" "$appid"; then state="running"; else state="not running"; fi
-        if [ "${#DEVICES[@]}" -gt 0 ]; then
+        fixlabel="fix"
+        if [ "$REMOVE" -eq 1 ]; then
+            fixlabel="remove"
+            if [ "${#DEVICES[@]}" -gt 0 ]; then
+                pres="$(present_devices "$pfx")"
+                npres=0
+                [ -n "$pres" ] && npres="$(printf '%s\n' "$pres" | grep -c .)"
+                if [ "$npres" -eq 0 ]; then fix="none present (nothing to remove)"
+                elif [ "$npres" -eq "${#DEVICES[@]}" ]; then fix="all $npres entries present (all would be removed)"
+                else fix="$npres of ${#DEVICES[@]} entries present (those would be removed)"; fi
+            elif grep -qE '"[^"]+ \(js\)"="disabled"' "$pfx/user.reg" 2>/dev/null; then
+                fix="entries present in user.reg (no device detected to check against)"
+            else
+                fix="unknown (no gamepad-class device detected)"
+            fi
+        elif [ "${#DEVICES[@]}" -gt 0 ]; then
             miss="$(missing_devices "$pfx")"
             if [ -z "$miss" ]; then fix="present"
             elif [ "$(printf '%s\n' "$miss" | grep -c .)" -eq "${#DEVICES[@]}" ]; then fix="absent"
@@ -625,7 +745,7 @@ if [ "$MODE" = "discover" ]; then
             fix="unknown (no gamepad-class device detected)"
         fi
         log "  [$layer] $pfx"
-        log "      state: $state; fix: $fix; wine: ${RW_WINE:-none found}"
+        log "      state: $state; $fixlabel: $fix; wine: ${RW_WINE:-none found}"
     done <<< "$disc"
     log "Total: $n_disc prefix(es) discovered."
     exit 0
@@ -657,7 +777,11 @@ if [ "$MODE" = "prefix" ]; then
     log "Devices: $(printf '%s; ' "${DEVICES[@]}" | sed 's/; $//')"
     wine_for_layer "$layer"
     log "Wine: ${RW_WINE:-none found}"
-    out="$(process_prefix "PREFIX ($layer)" "$pfx" "" "$layer")"
+    if [ "$REMOVE" -eq 1 ]; then
+        out="$(remove_prefix "PREFIX ($layer)" "$pfx" "" "$layer")"
+    else
+        out="$(process_prefix "PREFIX ($layer)" "$pfx" "" "$layer")"
+    fi
     log "$out"
     [ "$HAD_FAILURE" -eq 0 ] || exit 1
     exit 0
@@ -677,18 +801,25 @@ fi
 log "Devices: $(printf '%s; ' "${DEVICES[@]}" | sed 's/; $//')"
 
 n_fixed=0; n_already=0; n_skipped=0; n_absent=0
+n_removed=0; n_notpresent=0
 
 tally() { # $1 = full output line
     case "$1" in
         *": FIXED") n_fixed=$((n_fixed+1)) ;;
         *": ALREADY") n_already=$((n_already+1)) ;;
+        *": REMOVED") n_removed=$((n_removed+1)) ;;
+        *": NOT-PRESENT") n_notpresent=$((n_notpresent+1)) ;;
         *": SKIPPED-RUNNING") n_skipped=$((n_skipped+1)) ;;
     esac
 }
 
-run_and_tally() { # runs process_prefix, tees its line, tallies it
+run_and_tally() { # runs the apply or remove worker, tees its line, tallies it
     local out
-    out="$(process_prefix "$@")"
+    if [ "$REMOVE" -eq 1 ]; then
+        out="$(remove_prefix "$@")"
+    else
+        out="$(process_prefix "$@")"
+    fi
     log "$out"
     tally "$out"
 }
@@ -706,7 +837,11 @@ if [ "$MODE" = "lego" ]; then
         done <<< "$LIBS"
         [ "$found" -eq 0 ] && n_absent=$((n_absent+1))
     done
-    log "Summary: $n_fixed fixed, $n_already already, $n_skipped skipped (running), $n_absent not present."
+    if [ "$REMOVE" -eq 1 ]; then
+        log "Summary: $n_removed removed, $n_notpresent nothing to remove, $n_skipped skipped (running), $n_absent not present."
+    else
+        log "Summary: $n_fixed fixed, $n_already already, $n_skipped skipped (running), $n_absent not present."
+    fi
 else
     # --all-prefixes: every discovered prefix on every layer
     disc="$(discover_prefixes)"
@@ -723,7 +858,11 @@ else
         esac
         run_and_tally "$label" "$pfx" "$appid" "$layer"
     done <<< "$disc"
-    log "Summary: $n_fixed fixed, $n_already already, $n_skipped skipped (running)."
+    if [ "$REMOVE" -eq 1 ]; then
+        log "Summary: $n_removed removed, $n_notpresent nothing to remove, $n_skipped skipped (running)."
+    else
+        log "Summary: $n_fixed fixed, $n_already already, $n_skipped skipped (running)."
+    fi
 fi
 
 [ "$HAD_FAILURE" -eq 0 ] || exit 1
