@@ -14,8 +14,8 @@ connected (wired or Bluetooth), the output of
 read-only runs `lego-controller-fix --detect-only` and
 `lego-controller-fix --discover-only`.
 
-For installing, applying, and removing the fix, see
-[INSTALL.md](INSTALL.md) and the README.
+For installing, applying, and removing the fix, see the
+[Install](README.md#install) section of the README.
 
 ## What is supported
 
