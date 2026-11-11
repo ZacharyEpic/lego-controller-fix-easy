@@ -346,6 +346,11 @@ Report problems, and suggest titles or controllers that should be
 covered, in GitHub Issues on this repository:
 https://github.com/ZacharyEpic/lego-controller-fix-easy/issues
 
+What is known not to work, and what has not been verified yet, is
+listed plainly in [KNOWN-ISSUES.md](KNOWN-ISSUES.md). Read it
+before relying on the fix on a setup unlike the one it was tested
+on.
+
 A useful report includes:
 
 - your distro (for example Arch, Ubuntu, Fedora) and how Steam or
